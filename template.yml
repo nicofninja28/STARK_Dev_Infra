@@ -1,0 +1,392 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: STARK infra for the parser and code generator
+Parameters:
+    UserCICDPipelineBucketNameParameter:
+        Type: String
+        Description: Name for user bucket that will be used for the default STARK CI/CD pipeline.
+    UserCodeGenBucketNameParameter:
+        Type: String
+        Description: Name for user bucket that will hold static files and deployment packages created by STARK
+    UserWebsiteBucketNameParameter:
+        Type: String
+        Description: Name for user bucket that will be used as the website bucket for the STARK Parser UI. Not yet used in template, just needed for config.
+Resources:
+    STARKCloudFormationDeployServiceRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement: 
+                    - 
+                        Effect: Allow
+                        Principal:
+                           Service: 
+                              - 'cloudformation.amazonaws.com'
+                        Action: 'sts:AssumeRole'
+            ManagedPolicyArns:
+                - 'arn:aws:iam::aws:policy/AdministratorAccess'
+    STARKParserApi:
+        Type: AWS::Serverless::HttpApi
+        Properties:
+            CorsConfiguration:
+                AllowOrigins:
+                    - "*"
+                AllowHeaders:
+                    - "*"
+                AllowMethods:
+                    - "*"
+                MaxAge: 200
+                AllowCredentials: False
+    CFCustomResourceHelperLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            Content:
+                S3Bucket: !Ref UserCodeGenBucketNameParameter
+                S3Key: STARKLambdaLayers/CF_CustomResourceHelper_py39.zip
+            Description: Lambda-backed custom resource library for CloudFormation
+            LayerName: STARK_CF_CustomResourceHelper
+            CompatibleArchitectures:
+                - x86_64
+                - arm64
+            CompatibleRuntimes:
+                - python3.6
+                - python3.7
+                - python3.8
+                - python3.9
+    PyYamlLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            Content:
+                S3Bucket: !Ref UserCodeGenBucketNameParameter
+                S3Key: STARKLambdaLayers/yaml_py39.zip
+            Description: YAML module for Python 3.x
+            LayerName: STARK_PyYAML
+            CompatibleArchitectures:
+                - x86_64
+                - arm64
+            CompatibleRuntimes:
+                - python3.6
+                - python3.7
+                - python3.8
+                - python3.9
+    RequestslLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            Content:
+                S3Bucket: !Ref UserCodeGenBucketNameParameter
+                S3Key: STARKLambdaLayers/requests_py39.zip
+            Description: Requests module for Python 3.x
+            LayerName: STARK_Requests
+            CompatibleArchitectures:
+                - x86_64
+                - arm64
+            CompatibleRuntimes:
+                - python3.6
+                - python3.7
+                - python3.8
+                - python3.9
+    STARKFriendlyToSystemNamesLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            Content:
+                S3Bucket: !Ref UserCodeGenBucketNameParameter
+                S3Key: STARKLambdaLayers/STARK_friendly_to_system_name_py39.zip
+            Description: STARK module for converting user-supplied, human-friendly identifiers into system-friendly entity or variable names
+            LayerName: STARK_friendly_to_system_name
+            CompatibleArchitectures:
+                - x86_64
+                - arm64
+            CompatibleRuntimes:
+                - python3.6
+                - python3.7
+                - python3.8
+                - python3.9
+    STARKScryptLayer:
+        Type: AWS::Lambda::LayerVersion
+        Properties:
+            Content:
+                S3Bucket: !Ref UserCodeGenBucketNameParameter
+                S3Key: STARKLambdaLayers/STARK_scrypt_py39.zip
+            Description: STARK module for working with scrypt from the Python stdlib
+            LayerName: STARK_scrypt
+            CompatibleArchitectures:
+                - x86_64
+                - arm64
+            CompatibleRuntimes:
+                - python3.6
+                - python3.7
+                - python3.8
+                - python3.9
+    STARKParserFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Events:
+                ParserPostEvent:
+                    Type: HttpApi
+                    Properties:
+                        Path: /parser
+                        Method: POST
+                        ApiId:
+                            Ref: STARKParserApi
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_Parser
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AmazonS3ReadOnlyAccess
+                - AWSLambda_FullAccess
+            Layers:
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 60 
+            Architectures:
+                - arm64
+    STARKCFWriterFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_CFWriter
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+            Layers:
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKDeployFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Events:
+                ParserPostEvent:
+                    Type: HttpApi
+                    Properties:
+                        Path: /deploy
+                        Method: POST
+                        ApiId:
+                            Ref: STARKParserApi
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_Deploy
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AWSLambda_FullAccess
+                - AWSCloudFormationFullAccess
+                - IAMFullAccess
+                - AmazonS3ReadOnlyAccess
+            Layers:
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 600
+            Architectures:
+                - arm64
+    STARKDeployCheckFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Events:
+                ParserPostEvent:
+                    Type: HttpApi
+                    Properties:
+                        Path: /deploy_check
+                        Method: POST
+                        ApiId:
+                            Ref: STARKParserApi
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_Deploy_Check
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+            Policies:
+                - AWSLambda_FullAccess
+                - AWSCloudFormationFullAccess
+                - AmazonS3ReadOnlyAccess
+            Layers:
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 600
+            Architectures:
+                - arm64
+    STARKCodeGenStaticWriter:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_CodeGen_Static
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+                - ReadOnlyAccess
+                - AWSCodeCommitFullAccess
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKCodeGenDynamicWriter:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_CodeGen_Dynamic
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambda_FullAccess 
+                - AWSCodeCommitFullAccess
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKBucketCleanerFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_WebsiteBucketCleaner
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKSystemBootstrap:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_SystemBootstrap
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+                - AWSCodeCommitFullAccess
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKSystemPreLaunch:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_SystemPreLaunch
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+            Policies:
+                - AWSLambdaBasicExecutionRole
+                - AWSCodeCommitFullAccess
+                - AmazonDynamoDBFullAccess
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+                - !Ref PyYamlLayer
+                - !Ref STARKFriendlyToSystemNamesLayer
+                - !Ref STARKScryptLayer
+            Architectures:
+                - arm64
+            MemorySize: 1760
+            Timeout: 60
+    STARKWebsiteUpdaterFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_WebsiteUpdater
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+                    WEBSITE_BUCKET_NAME: !Ref UserWebsiteBucketNameParameter
+                    API_GATEWAY_ID: !Ref STARKParserApi
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+                - ReadOnlyAccess
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKWebsiteUpdaterRun:
+        Type: AWS::CloudFormation::CustomResource
+        Properties:
+            ServiceToken: !GetAtt STARKWebsiteUpdaterFunc.Arn
+            ApiGatewayId: !Ref STARKParserApi
+            UpdateToken: RandomTokenFromBuildScript
+            Remarks: This will update STARK_settings.js with the appropriate API Gateway ID
+        DependsOn:
+            -   STARKParserApi
+            -   STARKWebsiteUpdaterFunc
+    STARKConfigWriterFunc:
+        Type: AWS::Serverless::Function
+        Properties:
+            Runtime: python3.9
+            Handler: main.lambda_handler
+            CodeUri: lambda/STARK_ConfigWriter
+            Environment:
+                Variables:
+                    STARK_ENVIRONMENT_TYPE: PROD
+                    CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
+                    CICD_BUCKET_NAME: !Ref UserCICDPipelineBucketNameParameter
+                    API_GATEWAY_ID: !Ref STARKParserApi
+                    CLEANER_ARN: !GetAtt STARKBucketCleanerFunc.Arn
+                    CF_WRITER_ARN: !GetAtt STARKCFWriterFunc.Arn
+                    CG_DYNAMIC_ARN: !GetAtt STARKCodeGenDynamicWriter.Arn
+                    CG_STATIC_ARN: !GetAtt STARKCodeGenStaticWriter.Arn
+                    CF_DEPLOY_ROLE_ARN: !GetAtt STARKCloudFormationDeployServiceRole.Arn
+                    SYSTEM_BOOTSTRAP_ARN: !GetAtt STARKSystemBootstrap.Arn
+                    SYSTEM_PRELAUNCH_ARN: !GetAtt STARKSystemPreLaunch.Arn
+            Policies:
+                - AmazonS3FullAccess
+                - AWSLambdaBasicExecutionRole
+            Layers:
+                - !Ref CFCustomResourceHelperLayer
+            Timeout: 60
+            Architectures:
+                - arm64
+    STARKConfigWriterRun:
+        Type: AWS::CloudFormation::CustomResource
+        Properties:
+            ServiceToken: !GetAtt STARKConfigWriterFunc.Arn
+            UpdateToken: RandomTokenFromBuildScript
+            Remarks: This will update STARK_settings.js with the appropriate API Gateway ID
+        DependsOn:
+            -   STARKConfigWriterFunc

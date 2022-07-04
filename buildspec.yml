@@ -1,0 +1,36 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+        python: 3.8
+  build:
+    commands:
+      - BUCKET=$(cat template_configuration.json | python3 -c "import sys, json; print(json.load(sys.stdin)['Parameters']['UserCICDPipelineBucketNameParameter'])")
+      - WEBSITE=$(cat template_configuration.json | python3 -c "import sys, json; print(json.load(sys.stdin)['Parameters']['UserWebsiteBucketNameParameter'])")
+      - CODEGEN=$(cat template_configuration.json | python3 -c "import sys, json; print(json.load(sys.stdin)['Parameters']['UserCodeGenBucketNameParameter'])")
+      - sed -i "s/RandomTokenFromBuildScript/$(date)/" template.yml
+      - aws cloudformation package --template-file template.yml --s3-bucket $BUCKET --s3-prefix STARK_InternalInfra_DeploymentPackages --output-template-file outputtemplate.yml
+      - aws s3 sync STARK_Parser s3://$WEBSITE --delete --acl public-read
+      - aws s3 sync STARK_SourceBucket_files s3://$CODEGEN/STARKWebSource --delete
+      - comment="The following four commands make sure the bin folder has the STARK CLI library files for the code generator later"
+      - mkdir bin/libstark
+      - cp -r lambda/STARK_Parser bin/libstark/
+      - cp -r lambda/STARK_CodeGen_Dynamic bin/libstark/
+      - cp -r lambda/STARK_CodeGen_Static bin/libstark/
+      - cp -r lambda/STARK_LayerMaker bin/libstark/
+      - aws s3 sync bin s3://$CODEGEN/STARKUtilities --delete
+      - aws s3 cp outputtemplate.yml s3://$BUCKET/STARK_InternalInfra_DeploymentPackages/
+      - aws s3 sync lambda/packaged_layers s3://$CODEGEN/STARKLambdaLayers --delete --exclude="*" --include="*.zip"
+      - aws s3 sync lambda/helpers s3://$CODEGEN/STARKLambdaHelpers --delete --exclude="*" --include="*.py"
+      - comment="The following commands populate the 'packaged_functions' folder with the appropriate lambda functions"
+      - mkdir lambda/packaged_functions
+      - zip STARK_LayerMaker.zip lambda/STARK_LayerMaker/*
+      - cp STARK_LayerMaker.zip lambda/packaged_functions/.
+      - aws s3 sync lambda/packaged_functions  s3://$CODEGEN/STARKLambdaFunctions --delete --exclude="*" --include="*.zip"
+
+artifacts:
+  files:
+    - template.yml
+    - outputtemplate.yml
+    - template_configuration.json
